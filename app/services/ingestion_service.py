@@ -2,7 +2,8 @@ from sqlalchemy.orm import Session
 from typing import List, Dict
 from app.connectors.jira_client import fetch_jira_issues
 from app.connectors.confluence_client import fetch_confluence_pages
-from app.db.crud import create_requirement
+from app.connectors.testcase_loader import read_testcases_from_csv
+from app.db.crud import create_requirement, create_testcase
 
 
 def ingest_jira_data(
@@ -128,3 +129,55 @@ def ingest_confluence_data(
         
     except Exception as e:
         raise Exception(f"Failed to ingest Confluence data: {str(e)}")
+
+
+def ingest_testcases_data(
+    db: Session,
+    file_path: str
+) -> Dict[str, int]:
+    """
+    Ingest test cases from a CSV file into the database
+    
+    Args:
+        db: Database session
+        file_path: Path to the CSV file containing test cases
+        
+    Returns:
+        Dictionary with ingestion statistics
+    """
+    try:
+        # Read test cases from CSV
+        testcases = read_testcases_from_csv(file_path)
+        
+        ingested_count = 0
+        failed_count = 0
+        
+        # Loop through test cases and save to database
+        for testcase in testcases:
+            try:
+                # Extract test case data
+                name = testcase.get("name", "")
+                steps = testcase.get("steps", "")
+                description = testcase.get("description", "")
+                expected_result = testcase.get("expected_result", "")
+                
+                # Combine steps, description, and expected result
+                full_steps = f"{description}\n\nSteps:\n{steps}\n\nExpected Result:\n{expected_result}"
+                
+                # Save to database using CRUD
+                create_testcase(db, name=name, steps=full_steps)
+                ingested_count += 1
+                
+            except Exception as e:
+                failed_count += 1
+                print(f"Failed to ingest test case {testcase.get('name', 'unknown')}: {str(e)}")
+        
+        return {
+            "total_fetched": len(testcases),
+            "ingested": ingested_count,
+            "failed": failed_count
+        }
+        
+    except Exception as e:
+        raise Exception(f"Failed to ingest test cases: {str(e)}")
+
