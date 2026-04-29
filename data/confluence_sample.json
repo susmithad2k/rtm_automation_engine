@@ -1,0 +1,20 @@
+[
+  {
+    "id": "12345",
+    "title": "API Documentation",
+    "body": {
+      "storage": {
+        "value": "<p>This page contains the API documentation for our REST endpoints.</p>"
+      }
+    }
+  },
+  {
+    "id": "12346",
+    "title": "User Guide",
+    "body": {
+      "storage": {
+        "value": "<p>Step-by-step guide for end users.</p>"
+      }
+    }
+  }
+]

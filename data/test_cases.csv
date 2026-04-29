@@ -1,0 +1,4 @@
+name,description,steps,expected_result
+TC001 - Login Test,Verify user can login successfully,"1. Navigate to login page\n2. Enter valid credentials\n3. Click login button",User is logged in and redirected to dashboard
+TC002 - Dashboard Test,Verify dashboard displays correctly,"1. Login as valid user\n2. Navigate to dashboard\n3. Check all widgets are visible",All dashboard widgets load successfully
+TC003 - PDF Export Test,Verify PDF export functionality,"1. Generate a report\n2. Click export to PDF button\n3. Save the PDF file",PDF file is downloaded successfully

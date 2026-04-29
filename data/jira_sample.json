@@ -1,0 +1,23 @@
+[
+  {
+    "key": "PROJ-101",
+    "fields": {
+      "summary": "User login functionality",
+      "description": "Implement secure user login with email and password authentication"
+    }
+  },
+  {
+    "key": "PROJ-102",
+    "fields": {
+      "summary": "Dashboard view for users",
+      "description": "Create a dashboard that displays user analytics and metrics"
+    }
+  },
+  {
+    "key": "PROJ-103",
+    "fields": {
+      "summary": "Export reports to PDF",
+      "description": "Add functionality to export generated reports in PDF format"
+    }
+  }
+]
