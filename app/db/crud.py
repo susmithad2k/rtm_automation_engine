@@ -79,3 +79,49 @@ def create_testcase(db: Session, name: str, steps: str = None):
 def get_testcases(db: Session, skip: int = 0, limit: int = 100):
     """Retrieve all test cases from the database"""
     return db.query(TestCaseModel).offset(skip).limit(limit).all()
+
+
+def create_mapping(db: Session, requirement_id: int, testcase_id: int):
+    """
+    Create a mapping between a requirement and test case
+    Uses upsert logic - if mapping exists, return it
+    """
+    # Check if mapping already exists
+    existing = db.query(Mapping).filter(
+        Mapping.requirement_id == requirement_id,
+        Mapping.testcase_id == testcase_id
+    ).first()
+    
+    if existing:
+        return existing
+    
+    # Create new mapping
+    try:
+        mapping = Mapping(requirement_id=requirement_id, testcase_id=testcase_id)
+        db.add(mapping)
+        db.commit()
+        db.refresh(mapping)
+        return mapping
+    except IntegrityError:
+        # Handle race condition
+        db.rollback()
+        existing = db.query(Mapping).filter(
+            Mapping.requirement_id == requirement_id,
+            Mapping.testcase_id == testcase_id
+        ).first()
+        return existing
+
+
+def get_mappings(db: Session, skip: int = 0, limit: int = 100):
+    """Retrieve all mappings from the database"""
+    return db.query(Mapping).offset(skip).limit(limit).all()
+
+
+def get_mappings_by_requirement(db: Session, requirement_id: int):
+    """Get all mappings for a specific requirement"""
+    return db.query(Mapping).filter(Mapping.requirement_id == requirement_id).all()
+
+
+def get_mappings_by_testcase(db: Session, testcase_id: int):
+    """Get all mappings for a specific test case"""
+    return db.query(Mapping).filter(Mapping.testcase_id == testcase_id).all()
