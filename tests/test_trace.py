@@ -10,7 +10,10 @@ from app.services.trace_service import (
     calculate_text_similarity,
     combine_text_fields,
     get_mappings_for_requirement,
-    get_mappings_for_testcase
+    get_mappings_for_testcase,
+    extract_keywords,
+    calculate_keyword_match_score,
+    calculate_hybrid_similarity
 )
 
 # Setup test database
@@ -202,5 +205,208 @@ class TestMappingDuplicates:
         ).all()
         
         assert len(mappings) == 1
+        
+        db.close()
+
+
+class TestKeywordExtraction:
+    """Test keyword extraction functions"""
+    
+    def test_extract_keywords_basic(self):
+        """Test basic keyword extraction"""
+        text = "User login functionality with email and password authentication"
+        keywords = extract_keywords(text)
+        
+        assert "user" in keywords
+        assert "login" in keywords
+        assert "functionality" in keywords
+        assert "email" in keywords
+        assert "password" in keywords
+        assert "authentication" in keywords
+        
+        # Stop words should be excluded
+        assert "with" not in keywords
+        assert "and" not in keywords
+    
+    def test_extract_keywords_with_numbers(self):
+        """Test keyword extraction with numbers"""
+        text = "TC001 - Login Test for User Authentication"
+        keywords = extract_keywords(text)
+        
+        assert "tc001" in keywords or "001" in keywords
+        assert "login" in keywords
+        assert "test" in keywords
+    
+    def test_extract_keywords_hyphenated(self):
+        """Test keyword extraction with hyphenated words"""
+        text = "Multi-factor authentication for end-users"
+        keywords = extract_keywords(text)
+        
+        assert "multi-factor" in keywords or "multi" in keywords
+        assert "authentication" in keywords
+        assert "end-users" in keywords or "users" in keywords
+    
+    def test_extract_keywords_empty(self):
+        """Test keyword extraction with empty text"""
+        keywords = extract_keywords("")
+        assert len(keywords) == 0
+        
+        keywords = extract_keywords(None)
+        assert len(keywords) == 0
+    
+    def test_extract_keywords_min_length(self):
+        """Test keyword extraction with minimum length"""
+        text = "A user can login to the system"
+        keywords = extract_keywords(text, min_length=3)
+        
+        # Short words should be excluded
+        assert "user" in keywords
+        assert "login" in keywords
+        assert "system" in keywords
+
+
+class TestKeywordMatching:
+    """Test keyword matching functions"""
+    
+    def test_keyword_match_score_identical(self):
+        """Test keyword match score for identical sets"""
+        keywords1 = {"login", "user", "password", "authentication"}
+        keywords2 = {"login", "user", "password", "authentication"}
+        
+        score = calculate_keyword_match_score(keywords1, keywords2)
+        assert score == 1.0
+    
+    def test_keyword_match_score_partial(self):
+        """Test keyword match score for partial overlap"""
+        keywords1 = {"login", "user", "password"}
+        keywords2 = {"login", "user", "email"}
+        
+        score = calculate_keyword_match_score(keywords1, keywords2)
+        # Intersection: {login, user} = 2
+        # Union: {login, user, password, email} = 4
+        # Score: 2/4 = 0.5
+        assert score == 0.5
+    
+    def test_keyword_match_score_no_overlap(self):
+        """Test keyword match score for no overlap"""
+        keywords1 = {"login", "user"}
+        keywords2 = {"dashboard", "report"}
+        
+        score = calculate_keyword_match_score(keywords1, keywords2)
+        assert score == 0.0
+    
+    def test_keyword_match_score_empty(self):
+        """Test keyword match score with empty sets"""
+        keywords1 = {"login", "user"}
+        keywords2 = set()
+        
+        score = calculate_keyword_match_score(keywords1, keywords2)
+        assert score == 0.0
+
+
+class TestHybridSimilarity:
+    """Test hybrid similarity combining keywords and TF-IDF"""
+    
+    def test_hybrid_similarity_basic(self):
+        """Test basic hybrid similarity"""
+        text1 = "User login with email and password"
+        text2 = "Login functionality for users with email credentials"
+        
+        result = calculate_hybrid_similarity(text1, text2)
+        
+        assert "keyword_score" in result
+        assert "tfidf_score" in result
+        assert "combined_score" in result
+        assert "matched_keywords" in result
+        
+        # Should have some matched keywords
+        assert len(result["matched_keywords"]) > 0
+        assert "login" in result["matched_keywords"]
+        assert "email" in result["matched_keywords"]
+    
+    def test_hybrid_similarity_custom_weights(self):
+        """Test hybrid similarity with custom weights"""
+        text1 = "User authentication system"
+        text2 = "User authentication process"
+        
+        # Test with keyword-heavy weighting
+        result1 = calculate_hybrid_similarity(text1, text2, keyword_weight=0.8, tfidf_weight=0.2)
+        
+        # Test with TF-IDF-heavy weighting
+        result2 = calculate_hybrid_similarity(text1, text2, keyword_weight=0.2, tfidf_weight=0.8)
+        
+        # Both should have valid scores
+        assert 0 <= result1["combined_score"] <= 1
+        assert 0 <= result2["combined_score"] <= 1
+    
+    def test_hybrid_similarity_different_texts(self):
+        """Test hybrid similarity with very different texts"""
+        text1 = "User login functionality"
+        text2 = "Export PDF reports"
+        
+        result = calculate_hybrid_similarity(text1, text2)
+        
+        # Should have low similarity
+        assert result["combined_score"] < 0.3
+        assert len(result["matched_keywords"]) == 0
+
+
+class TestKeywordBasedMapping:
+    """Test mapping with keyword matching enabled"""
+    
+    def test_mapping_with_keyword_matching(self):
+        """Test that keyword matching improves mapping accuracy"""
+        db = TestingSessionLocal()
+        
+        # Create requirement with specific keywords
+        req = create_requirement(
+            db, 
+            "User Authentication Feature",
+            "Implement login functionality with email and password"
+        )
+        
+        # Create test cases with varying keyword matches
+        tc1 = create_testcase(
+            db, 
+            "TC001 - User Login Test",
+            "Test login with email and password credentials"
+        )
+        tc2 = create_testcase(
+            db,
+            "TC002 - Dashboard View",
+            "Verify dashboard displays user data"
+        )
+        
+        # Map with keyword matching enabled
+        result = map_requirements_to_testcases(
+            db, 
+            similarity_threshold=0.2,
+            use_keyword_matching=True
+        )
+        
+        assert result["use_keyword_matching"] is True
+        assert result["mappings_created"] > 0
+        
+        # TC001 should be mapped (has matching keywords: login, email, password)
+        mappings = get_mappings_for_requirement(db, req.id)
+        assert len(mappings) > 0
+        
+        db.close()
+    
+    def test_mapping_without_keyword_matching(self):
+        """Test mapping with keyword matching disabled (TF-IDF only)"""
+        db = TestingSessionLocal()
+        
+        req = create_requirement(db, "Login Feature", "User authentication")
+        tc = create_testcase(db, "TC001 - Login Test", "Test user login")
+        
+        # Map without keyword matching
+        result = map_requirements_to_testcases(
+            db,
+            similarity_threshold=0.2,
+            use_keyword_matching=False
+        )
+        
+        assert result["use_keyword_matching"] is False
         
         db.close()
