@@ -112,9 +112,30 @@ def create_mapping(db: Session, requirement_id: int, testcase_id: int):
         return existing
 
 
-def get_mappings(db: Session, skip: int = 0, limit: int = 100):
-    """Retrieve all mappings from the database"""
-    return db.query(Mapping).offset(skip).limit(limit).all()
+def get_mappings(db: Session, skip: int = 0, limit: int = 100, requirement_id: int = None, testcase_id: int = None):
+    """
+    Retrieve mappings from the database with optional filtering
+    
+    Args:
+        db: Database session
+        skip: Number of records to skip (for pagination)
+        limit: Maximum number of records to return
+        requirement_id: Optional filter by requirement ID
+        testcase_id: Optional filter by test case ID
+        
+    Returns:
+        List of mappings matching the filters
+    """
+    query = db.query(Mapping)
+    
+    # Apply filters if provided
+    if requirement_id is not None:
+        query = query.filter(Mapping.requirement_id == requirement_id)
+    
+    if testcase_id is not None:
+        query = query.filter(Mapping.testcase_id == testcase_id)
+    
+    return query.offset(skip).limit(limit).all()
 
 
 def get_mappings_by_requirement(db: Session, requirement_id: int):

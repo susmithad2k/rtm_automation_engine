@@ -11,21 +11,25 @@ router = APIRouter(prefix="/trace", tags=["trace"])
 def get_trace_mappings(
     skip: int = 0,
     limit: int = 100,
+    requirement_id: int = None,
+    testcase_id: int = None,
     db: Session = Depends(get_db)
 ):
     """
-    Get all requirement-to-testcase mappings (traceability matrix)
+    Get requirement-to-testcase mappings (traceability matrix) with optional filtering
     
     Args:
         skip: Number of records to skip (for pagination)
         limit: Maximum number of records to return
+        requirement_id: Optional filter by requirement ID
+        testcase_id: Optional filter by test case ID
         db: Database session
         
     Returns:
-        TraceResponse containing all mappings
+        TraceResponse containing filtered mappings
     """
     try:
-        mappings = get_mappings(db, skip=skip, limit=limit)
+        mappings = get_mappings(db, skip=skip, limit=limit, requirement_id=requirement_id, testcase_id=testcase_id)
         
         mapping_items = [
             MappingItem(
