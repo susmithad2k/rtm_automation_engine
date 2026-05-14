@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from app.db.database import Base, engine
-from app.routes import ingest_routes, trace_routes
+from app.routes import ingest_routes, trace_routes, impact_routes
 
 
 @asynccontextmanager
@@ -17,6 +17,7 @@ app = FastAPI(title="RTM Automation Engine", lifespan=lifespan)
 # Include routers
 app.include_router(ingest_routes.router)
 app.include_router(trace_routes.router)
+app.include_router(impact_routes.router)
 
 
 @app.get("/")

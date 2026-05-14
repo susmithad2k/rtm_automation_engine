@@ -42,6 +42,11 @@ def get_requirements(db: Session, skip: int = 0, limit: int = 100):
     return db.query(Requirement).offset(skip).limit(limit).all()
 
 
+def get_requirement_by_id(db: Session, requirement_id: int):
+    """Retrieve a specific requirement by ID"""
+    return db.query(Requirement).filter(Requirement.id == requirement_id).first()
+
+
 def create_testcase(db: Session, name: str, steps: str = None):
     """
     Create a new test case in the database
@@ -79,6 +84,11 @@ def create_testcase(db: Session, name: str, steps: str = None):
 def get_testcases(db: Session, skip: int = 0, limit: int = 100):
     """Retrieve all test cases from the database"""
     return db.query(TestCaseModel).offset(skip).limit(limit).all()
+
+
+def get_testcase_by_id(db: Session, testcase_id: int):
+    """Retrieve a specific test case by ID"""
+    return db.query(TestCaseModel).filter(TestCaseModel.id == testcase_id).first()
 
 
 def create_mapping(db: Session, requirement_id: int, testcase_id: int):
