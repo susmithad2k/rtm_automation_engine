@@ -17,6 +17,77 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/api/impact", tags=["impact"])
 
 
+@router.get("/impact")
+def get_impacted_nodes(
+    requirement_id: int = Query(description="The requirement ID to analyze"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get impacted nodes (test cases and requirements) for a given requirement.
+    
+    This endpoint returns a simplified list of all nodes impacted by changes
+    to the specified requirement.
+    
+    Args:
+        requirement_id: The requirement ID to analyze
+        db: Database session
+        
+    Returns:
+        Dictionary containing lists of impacted test cases and requirements
+        
+    Raises:
+        HTTPException: If requirement not found or analysis fails
+    """
+    try:
+        from app.graph.traversal import TraceabilityGraph
+        from app.db.crud import get_requirement_by_id
+        
+        logger.info(f"Fetching impacted nodes for requirement {requirement_id}")
+        
+        # Verify requirement exists
+        requirement = get_requirement_by_id(db, requirement_id)
+        if not requirement:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Requirement {requirement_id} not found"
+            )
+        
+        # Get impacted nodes using the graph
+        graph = TraceabilityGraph(db)
+        
+        # Get directly impacted test cases
+        impacted_testcases = list(graph.get_testcases_for_requirement(requirement_id))
+        
+        # Get related requirements (those sharing test cases)
+        impacted_requirements = set()
+        for tc_id in impacted_testcases:
+            related_reqs = graph.get_requirements_for_testcase(tc_id)
+            impacted_requirements.update(related_reqs)
+        
+        # Remove the source requirement itself
+        impacted_requirements.discard(requirement_id)
+        
+        return {
+            'requirement_id': requirement_id,
+            'requirement_title': requirement.title,
+            'impacted_nodes': {
+                'test_cases': impacted_testcases,
+                'requirements': list(impacted_requirements),
+                'total_test_cases': len(impacted_testcases),
+                'total_requirements': len(impacted_requirements)
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except ValueError as e:
+        logger.warning(f"Requirement not found: {requirement_id}")
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error fetching impacted nodes for requirement {requirement_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get impacted nodes: {str(e)}")
+
+
 @router.get("/{requirement_id}")
 def analyze_requirement_impact(
     requirement_id: int,
