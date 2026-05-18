@@ -9,6 +9,8 @@ import networkx as nx
 from typing import Dict, List, Set, Optional, Tuple, Any
 from sqlalchemy.orm import Session
 from collections import defaultdict
+import re
+from difflib import SequenceMatcher
 
 from app.models.db_models import Requirement, TestCaseModel, Mapping
 from app.db.crud import (
@@ -43,17 +45,28 @@ class RTMGraphBuilder:
         self._requirement_nodes: Set[str] = set()
         self._testcase_nodes: Set[str] = set()
         
-    def build_graph(self, include_orphans: bool = True) -> nx.DiGraph:
+    def build_graph(
+        self, 
+        include_orphans: bool = True,
+        add_requirement_relationships: bool = True,
+        add_testcase_relationships: bool = True,
+        add_similarity_edges: bool = True,
+        similarity_threshold: float = 0.6
+    ) -> nx.DiGraph:
         """
-        Build the complete RTM graph from database.
+        Build the complete RTM graph from database with enhanced relationships.
         
         Args:
             include_orphans: If True, include requirements/testcases with no mappings
+            add_requirement_relationships: Add requirement-to-requirement edges
+            add_testcase_relationships: Add testcase-to-testcase edges
+            add_similarity_edges: Add similarity-based edges
+            similarity_threshold: Minimum similarity score (0.0-1.0) for similarity edges
             
         Returns:
             NetworkX DiGraph representing the RTM
         """
-        logger.info("Building RTM graph from database")
+        logger.info("Building enhanced RTM graph from database")
         
         # Clear existing graph
         self.graph.clear()
@@ -70,10 +83,20 @@ class RTMGraphBuilder:
         for tc in testcases:
             self._add_testcase_node(tc)
         
-        # Add mapping edges
+        # Add primary mapping edges (requirement -> testcase)
         mappings = get_mappings(self.db, skip=0, limit=100000)
         for mapping in mappings:
             self._add_mapping_edge(mapping)
+        
+        # Add enhanced relationships
+        if add_requirement_relationships:
+            self._add_requirement_relationships()
+        
+        if add_testcase_relationships:
+            self._add_testcase_relationships()
+        
+        if add_similarity_edges:
+            self._add_similarity_edges(requirements, testcases, similarity_threshold)
         
         # Remove orphans if requested
         if not include_orphans:
@@ -137,8 +160,223 @@ class RTMGraphBuilder:
                 source,
                 target,
                 mapping_id=mapping.id,
+                edge_type='maps_to',
                 weight=1.0
             )
+    
+    def _add_requirement_relationships(self) -> None:
+        """
+        Add requirement-to-requirement edges based on various relationships.
+        
+        This includes:
+        - Hierarchical relationships (parent-child based on naming)
+        - Shared test coverage relationships
+        """
+        logger.info("Adding requirement-to-requirement relationships")
+        
+        req_nodes = self.get_requirement_nodes()
+        
+        # 1. Add hierarchical relationships based on title patterns
+        # E.g., "REQ-1" -> "REQ-1.1", "US-100" -> "US-100.1"
+        req_titles = {}
+        for node in req_nodes:
+            title = self.graph.nodes[node]['title']
+            req_titles[node] = title
+        
+        for child_node, child_title in req_titles.items():
+            # Look for potential parent patterns
+            parent_pattern = self._extract_parent_id(child_title)
+            if parent_pattern:
+                for parent_node, parent_title in req_titles.items():
+                    if parent_node != child_node and parent_title == parent_pattern:
+                        self.graph.add_edge(
+                            parent_node,
+                            child_node,
+                            edge_type='parent_of',
+                            weight=1.0,
+                            relationship='hierarchical'
+                        )
+                        logger.debug(f"Added parent-child: {parent_title} -> {child_title}")
+        
+        # 2. Add shared test coverage relationships
+        for i, req1 in enumerate(req_nodes):
+            tests1 = set(self.graph.successors(req1))
+            if not tests1:
+                continue
+            
+            for req2 in req_nodes[i+1:]:
+                tests2 = set(self.graph.successors(req2))
+                if not tests2:
+                    continue
+                
+                # Calculate Jaccard similarity of test coverage
+                shared_tests = tests1 & tests2
+                if shared_tests:
+                    jaccard = len(shared_tests) / len(tests1 | tests2)
+                    if jaccard > 0.3:  # At least 30% overlap
+                        self.graph.add_edge(
+                            req1,
+                            req2,
+                            edge_type='related_via_tests',
+                            weight=jaccard,
+                            shared_tests=len(shared_tests),
+                            relationship='shared_coverage'
+                        )
+                        logger.debug(
+                            f"Added shared coverage: {req1} <-> {req2} "
+                            f"(jaccard={jaccard:.2f})"
+                        )
+    
+    def _add_testcase_relationships(self) -> None:
+        """
+        Add testcase-to-testcase edges based on shared requirement coverage.
+        """
+        logger.info("Adding testcase-to-testcase relationships")
+        
+        tc_nodes = self.get_testcase_nodes()
+        
+        # Add shared requirement coverage relationships
+        for i, tc1 in enumerate(tc_nodes):
+            reqs1 = set(self.graph.predecessors(tc1))
+            if not reqs1:
+                continue
+            
+            for tc2 in tc_nodes[i+1:]:
+                reqs2 = set(self.graph.predecessors(tc2))
+                if not reqs2:
+                    continue
+                
+                # Calculate Jaccard similarity of requirement coverage
+                shared_reqs = reqs1 & reqs2
+                if shared_reqs:
+                    jaccard = len(shared_reqs) / len(reqs1 | reqs2)
+                    if jaccard > 0.3:  # At least 30% overlap
+                        # Add bidirectional edges
+                        self.graph.add_edge(
+                            tc1,
+                            tc2,
+                            edge_type='related_via_requirements',
+                            weight=jaccard,
+                            shared_requirements=len(shared_reqs),
+                            relationship='shared_requirements'
+                        )
+                        logger.debug(
+                            f"Added shared requirements: {tc1} <-> {tc2} "
+                            f"(jaccard={jaccard:.2f})"
+                        )
+    
+    def _add_similarity_edges(
+        self,
+        requirements: List[Requirement],
+        testcases: List[TestCaseModel],
+        threshold: float = 0.6
+    ) -> None:
+        """
+        Add similarity-based edges using text comparison.
+        
+        Args:
+            requirements: List of requirement objects
+            testcases: List of testcase objects
+            threshold: Minimum similarity score (0.0-1.0)
+        """
+        logger.info(f"Adding similarity edges (threshold={threshold})")
+        
+        # Requirement similarity
+        req_map = {f"REQ_{req.id}": req for req in requirements}
+        req_nodes = list(req_map.keys())
+        
+        for i, req1_id in enumerate(req_nodes):
+            req1 = req_map[req1_id]
+            text1 = f"{req1.title} {req1.description or ''}"
+            
+            for req2_id in req_nodes[i+1:]:
+                req2 = req_map[req2_id]
+                text2 = f"{req2.title} {req2.description or ''}"
+                
+                similarity = self._calculate_text_similarity(text1, text2)
+                if similarity >= threshold:
+                    self.graph.add_edge(
+                        req1_id,
+                        req2_id,
+                        edge_type='similar_to',
+                        weight=similarity,
+                        relationship='text_similarity'
+                    )
+                    logger.debug(
+                        f"Added similarity: {req1.title} <-> {req2.title} "
+                        f"(similarity={similarity:.2f})"
+                    )
+        
+        # TestCase similarity
+        tc_map = {f"TC_{tc.id}": tc for tc in testcases}
+        tc_nodes = list(tc_map.keys())
+        
+        for i, tc1_id in enumerate(tc_nodes):
+            tc1 = tc_map[tc1_id]
+            text1 = f"{tc1.name} {tc1.steps or ''}"
+            
+            for tc2_id in tc_nodes[i+1:]:
+                tc2 = tc_map[tc2_id]
+                text2 = f"{tc2.name} {tc2.steps or ''}"
+                
+                similarity = self._calculate_text_similarity(text1, text2)
+                if similarity >= threshold:
+                    self.graph.add_edge(
+                        tc1_id,
+                        tc2_id,
+                        edge_type='similar_to',
+                        weight=similarity,
+                        relationship='text_similarity'
+                    )
+                    logger.debug(
+                        f"Added similarity: {tc1.name} <-> {tc2.name} "
+                        f"(similarity={similarity:.2f})"
+                    )
+    
+    def _extract_parent_id(self, title: str) -> Optional[str]:
+        """
+        Extract potential parent ID from a hierarchical title.
+        
+        Examples:
+        - "REQ-1.1" -> "REQ-1"
+        - "US-100.2" -> "US-100"
+        - "FEAT-5.3.1" -> "FEAT-5.3"
+        
+        Args:
+            title: Requirement title
+            
+        Returns:
+            Parent title pattern or None
+        """
+        # Pattern: PREFIX-NUMBER.SUBNUMBER
+        pattern = r'^([A-Z]+-\d+(?:\.\d+)*)\.\d+$'
+        match = re.match(pattern, title)
+        if match:
+            return match.group(1)
+        return None
+    
+    def _calculate_text_similarity(self, text1: str, text2: str) -> float:
+        """
+        Calculate similarity between two text strings.
+        
+        Uses SequenceMatcher for character-level similarity.
+        
+        Args:
+            text1: First text string
+            text2: Second text string
+            
+        Returns:
+            Similarity score between 0.0 and 1.0
+        """
+        if not text1 or not text2:
+            return 0.0
+        
+        # Normalize text
+        text1 = text1.lower().strip()
+        text2 = text2.lower().strip()
+        
+        # Calculate similarity
+        return SequenceMatcher(None, text1, text2).ratio()
     
     def _remove_orphan_nodes(self) -> None:
         """Remove nodes with no edges (orphaned requirements/testcases)."""
@@ -408,13 +646,19 @@ class RTMGraphBuilder:
     
     def get_graph_summary(self) -> Dict[str, Any]:
         """
-        Get comprehensive graph summary statistics.
+        Get comprehensive graph summary statistics with edge type breakdown.
         
         Returns:
             Dictionary with various graph metrics
         """
         req_nodes = self.get_requirement_nodes()
         tc_nodes = self.get_testcase_nodes()
+        
+        # Count edges by type
+        edge_types = defaultdict(int)
+        for u, v, data in self.graph.edges(data=True):
+            edge_type = data.get('edge_type', 'unknown')
+            edge_types[edge_type] += 1
         
         # Basic counts
         summary = {
@@ -424,7 +668,8 @@ class RTMGraphBuilder:
                 'testcases': len(tc_nodes)
             },
             'edges': {
-                'total': self.graph.number_of_edges()
+                'total': self.graph.number_of_edges(),
+                'by_type': dict(edge_types)
             }
         }
         
@@ -452,3 +697,183 @@ class RTMGraphBuilder:
         }
         
         return summary
+    
+    def get_requirement_hierarchy(self) -> Dict[str, List[str]]:
+        """
+        Get the hierarchical structure of requirements based on parent_of edges.
+        
+        Returns:
+            Dictionary mapping parent requirement IDs to list of child IDs
+        """
+        hierarchy = defaultdict(list)
+        
+        for u, v, data in self.graph.edges(data=True):
+            if data.get('edge_type') == 'parent_of':
+                parent_title = self.graph.nodes[u]['title']
+                child_title = self.graph.nodes[v]['title']
+                hierarchy[parent_title].append(child_title)
+        
+        return dict(hierarchy)
+    
+    def find_transitive_coverage(
+        self,
+        requirement_id: int,
+        max_depth: int = 3
+    ) -> Dict[str, Any]:
+        """
+        Find all test cases that transitively cover a requirement.
+        
+        Includes:
+        - Direct test cases
+        - Test cases covering child requirements
+        - Test cases covering related requirements
+        
+        Args:
+            requirement_id: Starting requirement ID
+            max_depth: Maximum traversal depth
+            
+        Returns:
+            Dictionary with coverage information
+        """
+        start_node = f"REQ_{requirement_id}"
+        if start_node not in self.graph:
+            return {'direct': [], 'transitive': [], 'depth_map': {}}
+        
+        # Direct test cases
+        direct_tcs = list(self.graph.successors(start_node))
+        direct_tc_data = [
+            {
+                'id': self.graph.nodes[tc]['db_id'],
+                'name': self.graph.nodes[tc]['name']
+            }
+            for tc in direct_tcs
+            if self.graph.nodes[tc]['type'] == 'testcase'
+        ]
+        
+        # Transitive test cases via related requirements
+        transitive_tcs = set()
+        depth_map = {}
+        visited = {start_node}
+        queue = [(start_node, 0)]
+        
+        while queue:
+            current_node, depth = queue.pop(0)
+            
+            if depth >= max_depth:
+                continue
+            
+            # Get all outgoing edges
+            for neighbor in self.graph.successors(current_node):
+                neighbor_type = self.graph.nodes[neighbor]['type']
+                
+                if neighbor_type == 'testcase':
+                    if neighbor not in direct_tcs:
+                        transitive_tcs.add(neighbor)
+                        depth_map[neighbor] = depth + 1
+                
+                elif neighbor_type == 'requirement' and neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append((neighbor, depth + 1))
+                    # Get test cases for this related requirement
+                    for tc in self.graph.successors(neighbor):
+                        if self.graph.nodes[tc]['type'] == 'testcase':
+                            if tc not in direct_tcs:
+                                transitive_tcs.add(tc)
+                                if tc not in depth_map:
+                                    depth_map[tc] = depth + 1
+        
+        transitive_tc_data = [
+            {
+                'id': self.graph.nodes[tc]['db_id'],
+                'name': self.graph.nodes[tc]['name'],
+                'depth': depth_map.get(tc, 0)
+            }
+            for tc in transitive_tcs
+        ]
+        
+        return {
+            'direct': direct_tc_data,
+            'transitive': transitive_tc_data,
+            'total_coverage': len(direct_tc_data) + len(transitive_tc_data)
+        }
+    
+    def find_similar_requirements(
+        self,
+        requirement_id: int,
+        min_similarity: float = 0.5
+    ) -> List[Dict[str, Any]]:
+        """
+        Find requirements similar to a given requirement.
+        
+        Args:
+            requirement_id: Target requirement ID
+            min_similarity: Minimum similarity score
+            
+        Returns:
+            List of similar requirements with similarity scores
+        """
+        source_node = f"REQ_{requirement_id}"
+        if source_node not in self.graph:
+            return []
+        
+        similar = []
+        for successor in self.graph.successors(source_node):
+            edge_data = self.graph.edges[source_node, successor]
+            if edge_data.get('edge_type') == 'similar_to':
+                similarity = edge_data.get('weight', 0.0)
+                if similarity >= min_similarity:
+                    req_data = self.graph.nodes[successor]
+                    similar.append({
+                        'id': req_data['db_id'],
+                        'title': req_data['title'],
+                        'similarity_score': round(similarity, 3)
+                    })
+        
+        # Also check incoming edges (bidirectional similarity)
+        for predecessor in self.graph.predecessors(source_node):
+            edge_data = self.graph.edges[predecessor, source_node]
+            if edge_data.get('edge_type') == 'similar_to':
+                similarity = edge_data.get('weight', 0.0)
+                if similarity >= min_similarity:
+                    req_data = self.graph.nodes[predecessor]
+                    similar.append({
+                        'id': req_data['db_id'],
+                        'title': req_data['title'],
+                        'similarity_score': round(similarity, 3)
+                    })
+        
+        # Sort by similarity descending
+        similar.sort(key=lambda x: x['similarity_score'], reverse=True)
+        return similar
+    
+    def get_edge_types_summary(self) -> Dict[str, Any]:
+        """
+        Get detailed summary of all edge types in the graph.
+        
+        Returns:
+            Dictionary with edge type statistics
+        """
+        edge_stats = defaultdict(lambda: {
+            'count': 0,
+            'avg_weight': 0.0,
+            'weights': []
+        })
+        
+        for u, v, data in self.graph.edges(data=True):
+            edge_type = data.get('edge_type', 'unknown')
+            weight = data.get('weight', 1.0)
+            
+            edge_stats[edge_type]['count'] += 1
+            edge_stats[edge_type]['weights'].append(weight)
+        
+        # Calculate averages
+        for edge_type, stats in edge_stats.items():
+            if stats['weights']:
+                stats['avg_weight'] = round(
+                    sum(stats['weights']) / len(stats['weights']), 3
+                )
+                stats['min_weight'] = round(min(stats['weights']), 3)
+                stats['max_weight'] = round(max(stats['weights']), 3)
+            del stats['weights']  # Remove raw weights from output
+        
+        return dict(edge_stats)
