@@ -119,23 +119,31 @@ class ImpactAnalysisService:
         # Detect directly impacted test cases
         directly_impacted_tcs = self._detect_direct_testcases(requirement_id)
         
-        # Detect related requirements (sharing test cases)
-        related_requirements = self._detect_related_requirements(
-            requirement_id,
-            directly_impacted_tcs
-        )
+        # Initialize empty lists for deeper analysis
+        related_requirements = []
+        indirectly_impacted_tcs = []
+        cascading_impacts = {'testcases': [], 'requirements': []}
         
-        # Detect indirectly impacted test cases
-        indirectly_impacted_tcs = self._detect_indirect_testcases(
-            related_requirements,
-            directly_impacted_tcs
-        )
-        
-        # Detect cascading impacts
-        cascading_impacts = self._detect_cascading_impacts(
-            requirement_id,
-            max_depth
-        )
+        # Only detect indirect impacts if max_depth > 1
+        if max_depth > 1:
+            # Detect related requirements (sharing test cases)
+            related_requirements = self._detect_related_requirements(
+                requirement_id,
+                directly_impacted_tcs
+            )
+            
+            # Detect indirectly impacted test cases
+            indirectly_impacted_tcs = self._detect_indirect_testcases(
+                related_requirements,
+                directly_impacted_tcs
+            )
+            
+            # Detect cascading impacts only if max_depth > 2
+            if max_depth > 2:
+                cascading_impacts = self._detect_cascading_impacts(
+                    requirement_id,
+                    max_depth
+                )
         
         # Combine all impacted nodes
         all_impacted_tcs = self._merge_impacted_testcases(

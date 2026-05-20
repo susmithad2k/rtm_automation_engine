@@ -12,6 +12,8 @@ htmlcov/
 *.sqlite
 *.sqlite3
 test.db
+test_*.db
+*.log
 
 # Virtual Environment
 venv/
