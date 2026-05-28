@@ -54,12 +54,17 @@ def detect_risk(
     # Identify recently changed items (placeholder - requires timestamp fields)
     recently_changed = get_recently_changed_items(db, days_threshold)
     
+    # Determine risk level and recommendation
+    risk_level, recommendation = get_risk_level_and_recommendation(risk_score)
+
     # Generate risk summary
     summary = generate_risk_summary(
         uncovered_count=uncovered_count,
         total_requirements=total_requirements,
         recently_changed_count=len(recently_changed),
-        risk_score=risk_score
+        risk_score=risk_score,
+        risk_level=risk_level,
+        recommendation=recommendation
     )
     
     return {
@@ -74,6 +79,8 @@ def detect_risk(
         "uncovered_count": uncovered_count,
         "recently_changed": recently_changed,
         "risk_score": risk_score,
+        "risk_level": risk_level,
+        "recommendation": recommendation,
         "summary": summary,
         "total_requirements": total_requirements
     }
@@ -190,11 +197,41 @@ def get_high_risk_requirements(db: Session, limit: int = 10) -> List[Dict]:
     return high_risk
 
 
+def get_risk_level_and_recommendation(
+    risk_score: float
+) -> tuple[str, str]:
+    """
+    Determine risk level and recommendation based on a risk score.
+    """
+    if risk_score >= 75:
+        return (
+            "CRITICAL",
+            "Immediate action required to add test coverage."
+        )
+    elif risk_score >= 50:
+        return (
+            "HIGH",
+            "Prioritize adding test coverage for uncovered requirements."
+        )
+    elif risk_score >= 25:
+        return (
+            "MEDIUM",
+            "Consider adding test coverage to improve quality assurance."
+        )
+    else:
+        return (
+            "LOW",
+            "Maintain current test coverage levels."
+        )
+
+
 def generate_risk_summary(
     uncovered_count: int,
     total_requirements: int,
     recently_changed_count: int,
-    risk_score: float
+    risk_score: float,
+    risk_level: str,
+    recommendation: str
 ) -> str:
     """
     Generate a human-readable risk summary.
@@ -204,36 +241,25 @@ def generate_risk_summary(
         total_requirements: Total number of requirements
         recently_changed_count: Number of recently changed items
         risk_score: Calculated risk score (0-100)
+        risk_level: Risk severity level
+        recommendation: Recommended action based on risk
         
     Returns:
         Human-readable risk summary string
     """
     if total_requirements == 0:
         return "No requirements found in the system."
-    
-    if risk_score >= 75:
-        severity = "CRITICAL"
-        recommendation = "Immediate action required to add test coverage."
-    elif risk_score >= 50:
-        severity = "HIGH"
-        recommendation = "Prioritize adding test coverage for uncovered requirements."
-    elif risk_score >= 25:
-        severity = "MEDIUM"
-        recommendation = "Consider adding test coverage to improve quality assurance."
-    else:
-        severity = "LOW"
-        recommendation = "Maintain current test coverage levels."
-    
+
     summary = (
-        f"Risk Level: {severity}\n"
+        f"Risk Level: {risk_level}\n"
         f"Risk Score: {risk_score}%\n"
         f"Uncovered Requirements: {uncovered_count} out of {total_requirements}\n"
         f"Recommendation: {recommendation}"
     )
-    
+
     if recently_changed_count > 0:
         summary += f"\nRecently Changed Items: {recently_changed_count}"
-    
+
     return summary
 
 
