@@ -76,52 +76,6 @@ def get_uncovered_requirements(db: Session, skip: int = 0, limit: int = 100):
     return uncovered
 
 
-def get_requirement_coverage_details(db: Session, requirement_id: int) -> dict:
-    """
-    Get detailed coverage information for a specific requirement.
-    
-    Args:
-        db: Database session
-        requirement_id: ID of the requirement
-        
-    Returns:
-        dict: Detailed coverage information including:
-            - requirement: The requirement object
-            - test_count: Number of test cases mapped to this requirement
-            - test_cases: List of test cases mapped to this requirement
-            - is_covered: Boolean indicating if requirement has any test coverage
-    """
-    requirement = db.query(Requirement).filter(Requirement.id == requirement_id).first()
-    
-    if not requirement:
-        return None
-    
-    # Get all mappings for this requirement
-    mappings = db.query(Mapping).filter(Mapping.requirement_id == requirement_id).all()
-    
-    # Get the actual test cases
-    test_cases = []
-    for mapping in mappings:
-        test_case = db.query(TestCaseModel).filter(TestCaseModel.id == mapping.testcase_id).first()
-        if test_case:
-            test_cases.append({
-                "id": test_case.id,
-                "name": test_case.name,
-                "steps": test_case.steps
-            })
-    
-    return {
-        "requirement": {
-            "id": requirement.id,
-            "title": requirement.title,
-            "description": requirement.description
-        },
-        "test_count": len(test_cases),
-        "test_cases": test_cases,
-        "is_covered": len(test_cases) > 0
-    }
-
-
 def get_combined_coverage_and_risk(
     db: Session,
     days_threshold: int = 30,

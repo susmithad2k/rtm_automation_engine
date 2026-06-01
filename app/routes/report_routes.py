@@ -5,21 +5,25 @@ This module provides REST API endpoints for generating comprehensive reports
 combining coverage and risk analysis.
 """
 
+# Standard library imports
+import io
+
+# Third-party imports
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-import io
 
+# Local imports
 from app.db.database import get_db
 from app.services.coverage_service import calculate_coverage
-from app.services.risk_service import detect_risk
 from app.services.report_service import (
-    generate_comprehensive_report,
     export_coverage_report_csv,
     export_risk_report_csv,
+    export_summary_report_csv,
     export_traceability_matrix_csv,
-    export_summary_report_csv
+    generate_comprehensive_report,
 )
+from app.services.risk_service import detect_risk
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)

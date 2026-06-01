@@ -1,8 +1,10 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func, distinct
-from app.models.db_models import Requirement, TestCaseModel, Mapping
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
+
+from app.models.db_models import Requirement, TestCaseModel, Mapping
+from app.services.coverage_service import get_uncovered_requirements
 
 
 def detect_risk(
@@ -77,29 +79,6 @@ def detect_risk(
         "summary": summary,
         "total_requirements": total_requirements
     }
-
-
-def get_uncovered_requirements(db: Session, skip: int = 0, limit: int = 100) -> List[Requirement]:
-    """
-    Get all requirements that don't have any test case mappings.
-    
-    Args:
-        db: Database session
-        skip: Number of records to skip (for pagination)
-        limit: Maximum number of records to return
-        
-    Returns:
-        List of requirements without test case coverage
-    """
-    # Subquery to get all requirement IDs that have mappings
-    covered_ids = db.query(Mapping.requirement_id).distinct().subquery()
-    
-    # Query requirements that are NOT in the covered IDs
-    uncovered = db.query(Requirement).filter(
-        ~Requirement.id.in_(covered_ids)
-    ).offset(skip).limit(limit).all()
-    
-    return uncovered
 
 
 def get_recently_changed_items(
@@ -235,54 +214,3 @@ def generate_risk_summary(
         summary += f"\nRecently Changed Items: {recently_changed_count}"
     
     return summary
-
-
-def calculate_requirement_risk_score(
-    db: Session,
-    requirement_id: int
-) -> Dict:
-    """
-    Calculate risk score for a specific requirement.
-    
-    Args:
-        db: Database session
-        requirement_id: ID of the requirement
-        
-    Returns:
-        dict: Risk assessment for the specific requirement
-    """
-    requirement = db.query(Requirement).filter(Requirement.id == requirement_id).first()
-    
-    if not requirement:
-        return {"error": "Requirement not found"}
-    
-    # Check if requirement has any test coverage
-    mapping_count = db.query(func.count(Mapping.id)).filter(
-        Mapping.requirement_id == requirement_id
-    ).scalar()
-    
-    has_coverage = mapping_count > 0
-    
-    # Calculate risk factors
-    risk_factors = []
-    if not has_coverage:
-        risk_factors.append("No test coverage")
-    
-    # Determine risk level
-    if not has_coverage:
-        risk_level = "HIGH"
-        risk_score = 100
-    else:
-        risk_level = "LOW"
-        risk_score = 0
-    
-    return {
-        "requirement_id": requirement_id,
-        "title": requirement.title,
-        "description": requirement.description,
-        "has_coverage": has_coverage,
-        "test_count": mapping_count,
-        "risk_level": risk_level,
-        "risk_score": risk_score,
-        "risk_factors": risk_factors
-    }

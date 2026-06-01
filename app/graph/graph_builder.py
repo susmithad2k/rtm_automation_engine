@@ -5,19 +5,19 @@ This module provides NetworkX-based graph construction and analysis
 for the relationship network between requirements and test cases.
 """
 
-import networkx as nx
-from typing import Dict, List, Set, Optional, Tuple, Any
-from sqlalchemy.orm import Session
-from collections import defaultdict
+# Standard library imports
 import re
+from collections import defaultdict
 from difflib import SequenceMatcher
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from app.models.db_models import Requirement, TestCaseModel, Mapping
-from app.db.crud import (
-    get_requirements,
-    get_testcases,
-    get_mappings
-)
+# Third-party imports
+import networkx as nx
+from sqlalchemy.orm import Session
+
+# Local imports
+from app.db.crud import get_mappings, get_requirements, get_testcases
+from app.models.db_models import Mapping, Requirement, TestCaseModel
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)

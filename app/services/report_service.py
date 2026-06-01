@@ -5,14 +5,18 @@ This module provides report generation and export functionality,
 including CSV export for coverage and risk analysis.
 """
 
+# Standard library imports
 import csv
 import io
 from datetime import datetime, timezone
 from typing import Dict, List
-from sqlalchemy.orm import Session
-from sqlalchemy import func, distinct
 
-from app.models.db_models import Requirement, TestCaseModel, Mapping
+# Third-party imports
+from sqlalchemy import distinct, func
+from sqlalchemy.orm import Session
+
+# Local imports
+from app.models.db_models import Mapping, Requirement, TestCaseModel
 from app.services.coverage_service import calculate_coverage
 from app.services.risk_service import detect_risk
 from app.utils.logger import get_logger
