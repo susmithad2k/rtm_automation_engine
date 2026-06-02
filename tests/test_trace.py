@@ -652,3 +652,314 @@ class TestKeywordBasedMapping:
         assert result["use_keyword_matching"] is False
         
         db.close()
+
+
+class TestMappingRetrieval:
+    """Test retrieving existing mappings"""
+    
+    def test_get_mappings_for_requirement(self):
+        """Test getting all mappings for a specific requirement"""
+        db = TestingSessionLocal()
+        
+        # Create requirement and multiple test cases
+        req = create_requirement(db, "User Login", "Authentication feature")
+        tc1 = create_testcase(db, "TC001 - Login Test", "Test valid login")
+        tc2 = create_testcase(db, "TC002 - Invalid Login", "Test invalid credentials")
+        tc3 = create_testcase(db, "TC003 - Password Reset", "Test password reset")
+        
+        # Create mappings
+        service = TraceabilityService(similarity_threshold=0.1)
+        service.generate_traceability_matrix(db)
+        
+        # Get mappings for requirement
+        mappings = get_mappings_for_requirement(db, req.id)
+        
+        assert len(mappings) > 0
+        assert all(m.requirement_id == req.id for m in mappings)
+        
+        db.close()
+    
+    def test_get_mappings_for_testcase(self):
+        """Test getting all mappings for a specific test case"""
+        db = TestingSessionLocal()
+        
+        # Create multiple requirements and one test case
+        req1 = create_requirement(db, "Login Feature", "User authentication")
+        req2 = create_requirement(db, "Session Management", "User session handling")
+        tc = create_testcase(db, "TC001 - Auth Test", "Test user authentication and session")
+        
+        # Create mappings
+        service = TraceabilityService(similarity_threshold=0.1)
+        service.generate_traceability_matrix(db)
+        
+        # Get mappings for test case
+        mappings = get_mappings_for_testcase(db, tc.id)
+        
+        assert len(mappings) > 0
+        assert all(m.testcase_id == tc.id for m in mappings)
+        
+        db.close()
+    
+    def test_get_mappings_empty_result(self):
+        """Test getting mappings when none exist"""
+        db = TestingSessionLocal()
+        
+        # Create requirement with no test cases
+        req = create_requirement(db, "Isolated Requirement", "No test coverage")
+        
+        # Get mappings
+        mappings = get_mappings_for_requirement(db, req.id)
+        
+        assert len(mappings) == 0
+        
+        db.close()
+    
+    def test_mapping_similarity_scores(self):
+        """Test that mappings store similarity scores"""
+        db = TestingSessionLocal()
+        
+        req = create_requirement(db, "Login Feature", "User authentication")
+        tc = create_testcase(db, "TC001 - Login Test", "Test user login functionality")
+        
+        service = TraceabilityService(similarity_threshold=0.1)
+        service.generate_traceability_matrix(db)
+        
+        mappings = get_mappings_for_requirement(db, req.id)
+        
+        # All mappings should have similarity scores
+        for mapping in mappings:
+            assert hasattr(mapping, 'similarity_score')
+            assert 0.0 <= mapping.similarity_score <= 1.0
+        
+        db.close()
+
+
+class TestTraceabilityMatrixOperations:
+    """Test traceability matrix operations"""
+    
+    def test_matrix_update_incremental(self):
+        """Test incrementally updating traceability matrix"""
+        db = TestingSessionLocal()
+        
+        # Initial setup
+        req1 = create_requirement(db, "Feature A", "Description A")
+        tc1 = create_testcase(db, "TC001", "Test A")
+        
+        service = TraceabilityService(similarity_threshold=0.1)
+        result1 = service.generate_traceability_matrix(db)
+        initial_mappings = result1["mappings_created"]
+        
+        # Add new requirement and test case
+        req2 = create_requirement(db, "Feature B", "Description B")
+        tc2 = create_testcase(db, "TC002", "Test B")
+        
+        # Regenerate matrix
+        result2 = service.generate_traceability_matrix(db)
+        
+        # Should have more requirements and test cases
+        assert result2["total_requirements"] > result1["total_requirements"]
+        assert result2["total_testcases"] > result1["total_testcases"]
+        
+        db.close()
+    
+    def test_matrix_with_empty_database(self):
+        """Test generating matrix with no data"""
+        db = TestingSessionLocal()
+        
+        service = TraceabilityService(similarity_threshold=0.2)
+        result = service.generate_traceability_matrix(db)
+        
+        assert result["total_requirements"] == 0
+        assert result["total_testcases"] == 0
+        assert result["mappings_created"] == 0
+        
+        db.close()
+    
+    def test_matrix_with_only_requirements(self):
+        """Test generating matrix with only requirements (no test cases)"""
+        db = TestingSessionLocal()
+        
+        create_requirement(db, "Req 1", "Description 1")
+        create_requirement(db, "Req 2", "Description 2")
+        
+        service = TraceabilityService(similarity_threshold=0.2)
+        result = service.generate_traceability_matrix(db)
+        
+        assert result["total_requirements"] == 2
+        assert result["total_testcases"] == 0
+        assert result["mappings_created"] == 0
+        
+        db.close()
+    
+    def test_matrix_with_only_testcases(self):
+        """Test generating matrix with only test cases (no requirements)"""
+        db = TestingSessionLocal()
+        
+        create_testcase(db, "TC001", "Test 1")
+        create_testcase(db, "TC002", "Test 2")
+        
+        service = TraceabilityService(similarity_threshold=0.2)
+        result = service.generate_traceability_matrix(db)
+        
+        assert result["total_requirements"] == 0
+        assert result["total_testcases"] == 2
+        assert result["mappings_created"] == 0
+        
+        db.close()
+
+
+class TestEdgeCasesAndValidation:
+    """Test edge cases and input validation"""
+    
+    def test_empty_text_similarity(self):
+        """Test similarity calculation with empty text"""
+        calculator = SimilarityCalculator()
+        
+        # Both empty
+        assert calculator.calculate_tfidf_similarity("", "") == 0.0
+        
+        # One empty
+        assert calculator.calculate_tfidf_similarity("", "some text") == 0.0
+        assert calculator.calculate_tfidf_similarity("some text", "") == 0.0
+    
+    def test_special_characters_in_text(self):
+        """Test similarity with special characters"""
+        calculator = SimilarityCalculator()
+        
+        text1 = "User@Login!Feature#123"
+        text2 = "User@Login!Feature#456"
+        
+        similarity = calculator.calculate_tfidf_similarity(text1, text2)
+        assert similarity > 0.5  # Should be similar despite special characters
+    
+    def test_unicode_text_handling(self):
+        """Test handling of unicode characters"""
+        calculator = SimilarityCalculator()
+        
+        text1 = "User login with password"
+        text2 = "User login with пароль"  # Contains Cyrillic
+        
+        # Should not crash
+        similarity = calculator.calculate_tfidf_similarity(text1, text2)
+        assert 0.0 <= similarity <= 1.0
+    
+    def test_very_long_text(self):
+        """Test similarity with very long text"""
+        calculator = SimilarityCalculator()
+        
+        text1 = " ".join(["login"] * 1000)
+        text2 = " ".join(["login"] * 1000)
+        
+        similarity = calculator.calculate_tfidf_similarity(text1, text2)
+        assert similarity == 1.0
+    
+    def test_case_insensitivity(self):
+        """Test that similarity calculation is case-insensitive"""
+        calculator = SimilarityCalculator()
+        
+        text1 = "User Login Feature"
+        text2 = "user login feature"
+        
+        similarity = calculator.calculate_tfidf_similarity(text1, text2)
+        assert similarity == 1.0
+    
+    def test_whitespace_normalization(self):
+        """Test that extra whitespace is normalized"""
+        calculator = SimilarityCalculator()
+        
+        text1 = "User   login    feature"
+        text2 = "User login feature"
+        
+        similarity = calculator.calculate_tfidf_similarity(text1, text2)
+        assert similarity == 1.0
+    
+    def test_null_description_handling(self):
+        """Test handling of null descriptions"""
+        db = TestingSessionLocal()
+        
+        # Create requirement with null description
+        from app.models.db_models import Requirement
+        req = Requirement(title="Test Requirement", description=None)
+        db.add(req)
+        db.commit()
+        
+        tc = create_testcase(db, "TC001", "Test case")
+        
+        # Should not crash
+        service = TraceabilityService(similarity_threshold=0.2)
+        result = service.generate_traceability_matrix(db)
+        
+        assert result is not None
+        
+        db.close()
+
+
+class TestBatchOperations:
+    """Test batch mapping operations"""
+    
+    def test_large_scale_mapping(self):
+        """Test mapping with many requirements and test cases"""
+        db = TestingSessionLocal()
+        
+        # Create 20 requirements
+        for i in range(20):
+            create_requirement(db, f"REQ-{i:03d}", f"Requirement {i} description")
+        
+        # Create 30 test cases
+        for i in range(30):
+            create_testcase(db, f"TC-{i:03d}", f"Test case {i} description")
+        
+        # Generate mappings
+        service = TraceabilityService(similarity_threshold=0.1)
+        result = service.generate_traceability_matrix(db)
+        
+        assert result["total_requirements"] == 20
+        assert result["total_testcases"] == 30
+        
+        db.close()
+    
+    def test_selective_remapping(self):
+        """Test remapping specific requirements"""
+        db = TestingSessionLocal()
+        
+        req1 = create_requirement(db, "Feature A", "Original description")
+        tc1 = create_testcase(db, "TC001", "Test for feature A")
+        
+        service = TraceabilityService(similarity_threshold=0.1)
+        service.generate_traceability_matrix(db)
+        
+        # Update requirement description
+        req1.description = "Updated description for feature A"
+        db.commit()
+        
+        # Remap
+        result = service.generate_traceability_matrix(db)
+        
+        # Should update existing mappings
+        assert result["total_requirements"] == 1
+        
+        db.close()
+    
+    def test_concurrent_mapping_safety(self):
+        """Test that concurrent mapping operations don't create duplicates"""
+        db = TestingSessionLocal()
+        
+        req = create_requirement(db, "Feature", "Description")
+        tc = create_testcase(db, "TC001", "Test")
+        
+        # Map multiple times
+        service = TraceabilityService(similarity_threshold=0.1)
+        service.generate_traceability_matrix(db)
+        service.generate_traceability_matrix(db)
+        service.generate_traceability_matrix(db)
+        
+        # Should not create duplicate mappings
+        mappings = db.query(Mapping).filter(
+            Mapping.requirement_id == req.id,
+            Mapping.testcase_id == tc.id
+        ).all()
+        
+        assert len(mappings) == 1
+        
+        db.close()
+

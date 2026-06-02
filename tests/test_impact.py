@@ -306,5 +306,413 @@ class TestImpactAnalysisEdgeCases:
         assert result.risk_assessment['risk_score'] > 30
 
 
+class TestImpactPropagation:
+    """Test impact propagation through requirement networks"""
+    
+    def test_direct_impact_only(self, db):
+        """Test that direct impacts are correctly identified"""
+        # Create simple chain: REQ1 -> TC1, TC2
+        req1 = crud.create_requirement(db, "REQ-DIRECT", "Direct requirement")
+        tc1 = crud.create_testcase(db, "TC-DIRECT-1", "Direct test case 1")
+        tc2 = crud.create_testcase(db, "TC-DIRECT-2", "Direct test case 2")
+        
+        crud.create_mapping(db, req1.id, tc1.id)
+        crud.create_mapping(db, req1.id, tc2.id)
+        
+        service = ImpactAnalysisService(db)
+        result = service.detect_impacted_nodes(req1.id, max_depth=1, include_risk_assessment=False)
+        
+        # Should have exactly 2 direct test cases, no indirect
+        direct_tcs = [tc for tc in result.impacted_testcases if tc.impact_type == ImpactType.DIRECT]
+        indirect_tcs = [tc for tc in result.impacted_testcases if tc.impact_type == ImpactType.INDIRECT]
+        
+        assert len(direct_tcs) == 2
+        assert len(indirect_tcs) == 0
+    
+    def test_indirect_impact_through_shared_testcase(self, db):
+        """Test indirect impact detection through shared test cases"""
+        # Create network: REQ1 -> TC1 <- REQ2 -> TC2
+        req1 = crud.create_requirement(db, "REQ-1", "First requirement")
+        req2 = crud.create_requirement(db, "REQ-2", "Second requirement")
+        tc1 = crud.create_testcase(db, "TC-SHARED", "Shared test case")
+        tc2 = crud.create_testcase(db, "TC-UNIQUE", "Unique to REQ2")
+        
+        crud.create_mapping(db, req1.id, tc1.id)
+        crud.create_mapping(db, req2.id, tc1.id)
+        crud.create_mapping(db, req2.id, tc2.id)
+        
+        service = ImpactAnalysisService(db)
+        result = service.detect_impacted_nodes(req1.id, max_depth=3, include_risk_assessment=False)
+        
+        # Should detect REQ-2 as related requirement
+        related_req_ids = {req.node_id for req in result.impacted_requirements}
+        assert req2.id in related_req_ids
+        
+        # Should detect TC2 as indirect test case
+        all_tc_ids = {tc.node_id for tc in result.impacted_testcases}
+        assert tc2.id in all_tc_ids
+    
+    def test_cascading_impact_deep_traversal(self, db):
+        """Test cascading impacts through multiple levels"""
+        # Create deep network: REQ1 -> TC1 <- REQ2 -> TC2 <- REQ3 -> TC3
+        req1 = crud.create_requirement(db, "REQ-L1", "Level 1 requirement")
+        req2 = crud.create_requirement(db, "REQ-L2", "Level 2 requirement")
+        req3 = crud.create_requirement(db, "REQ-L3", "Level 3 requirement")
+        
+        tc1 = crud.create_testcase(db, "TC-L1", "Level 1 test")
+        tc2 = crud.create_testcase(db, "TC-L2", "Level 2 test")
+        tc3 = crud.create_testcase(db, "TC-L3", "Level 3 test")
+        
+        crud.create_mapping(db, req1.id, tc1.id)
+        crud.create_mapping(db, req2.id, tc1.id)
+        crud.create_mapping(db, req2.id, tc2.id)
+        crud.create_mapping(db, req3.id, tc2.id)
+        crud.create_mapping(db, req3.id, tc3.id)
+        
+        service = ImpactAnalysisService(db)
+        result = service.detect_impacted_nodes(req1.id, max_depth=5, include_risk_assessment=False)
+        
+        # Should detect all requirements in the chain
+        all_req_ids = {req.node_id for req in result.impacted_requirements}
+        assert req2.id in all_req_ids
+        assert req3.id in all_req_ids
+        
+        # Should detect all test cases
+        all_tc_ids = {tc.node_id for tc in result.impacted_testcases}
+        assert tc1.id in all_tc_ids
+        assert tc2.id in all_tc_ids
+        assert tc3.id in all_tc_ids
+    
+    def test_impact_level_degradation(self, db):
+        """Test that impact level decreases with distance"""
+        # Create chain with varying distances
+        req1 = crud.create_requirement(db, "REQ-START", "Starting requirement")
+        req2 = crud.create_requirement(db, "REQ-MID", "Middle requirement")
+        
+        tc1 = crud.create_testcase(db, "TC-DIRECT", "Direct test")
+        tc2 = crud.create_testcase(db, "TC-INDIRECT", "Indirect test")
+        
+        # REQ1 -> TC1 (direct)
+        crud.create_mapping(db, req1.id, tc1.id)
+        # REQ2 -> TC1, TC2 (REQ2 shares TC1 with REQ1)
+        crud.create_mapping(db, req2.id, tc1.id)
+        crud.create_mapping(db, req2.id, tc2.id)
+        
+        service = ImpactAnalysisService(db)
+        result = service.detect_impacted_nodes(req1.id, max_depth=3, include_risk_assessment=False)
+        
+        # TC1 should be CRITICAL (direct)
+        tc1_impacts = [tc for tc in result.impacted_testcases if tc.node_id == tc1.id]
+        if tc1_impacts:
+            assert tc1_impacts[0].impact_level == ImpactLevel.CRITICAL
+        
+        # TC2 should be lower priority (indirect/cascading)
+        tc2_impacts = [tc for tc in result.impacted_testcases if tc.node_id == tc2.id]
+        if tc2_impacts:
+            assert tc2_impacts[0].impact_level in [ImpactLevel.HIGH, ImpactLevel.MEDIUM, ImpactLevel.LOW]
+    
+    def test_shared_dependency_count(self, db):
+        """Test counting shared dependencies accurately"""
+        # Create requirement with multiple dependent requirements
+        tc_shared = crud.create_testcase(db, "TC-SHARED", "Shared by many requirements")
+        
+        for i in range(5):
+            req = crud.create_requirement(db, f"REQ-{i}", f"Requirement {i}")
+            crud.create_mapping(db, req.id, tc_shared.id)
+        
+        req_source = crud.create_requirement(db, "REQ-SOURCE", "Source requirement")
+        crud.create_mapping(db, req_source.id, tc_shared.id)
+        
+        service = ImpactAnalysisService(db)
+        result = service.detect_impacted_nodes(req_source.id, max_depth=3, include_risk_assessment=False)
+        
+        # TC-SHARED should show it's shared by multiple requirements
+        tc_shared_impacts = [tc for tc in result.impacted_testcases if tc.node_id == tc_shared.id]
+        if tc_shared_impacts:
+            assert tc_shared_impacts[0].shared_dependencies >= 2
+
+
+class TestRiskAssessment:
+    """Test risk assessment functionality"""
+    
+    def test_risk_score_calculation(self, db):
+        """Test that risk scores are calculated correctly"""
+        req = crud.create_requirement(db, "REQ-RISK", "Requirement for risk testing")
+        
+        # Create multiple test cases to increase risk
+        for i in range(10):
+            tc = crud.create_testcase(db, f"TC-RISK-{i}", f"Risk test case {i}")
+            crud.create_mapping(db, req.id, tc.id)
+        
+        service = ImpactAnalysisService(db)
+        result = service.detect_impacted_nodes(req.id, max_depth=2, include_risk_assessment=True)
+        
+        # Should have risk assessment
+        assert result.risk_assessment is not None
+        assert 'risk_score' in result.risk_assessment
+        assert 0 <= result.risk_assessment['risk_score'] <= 100
+        
+        # Higher number of impacted nodes should mean higher risk
+        assert result.risk_assessment['risk_score'] > 20
+    
+    def test_risk_categories(self, db):
+        """Test risk category assignment"""
+        # Low risk: isolated requirement
+        req_low = crud.create_requirement(db, "REQ-LOW", "Low risk requirement")
+        
+        # High risk: many dependencies
+        req_high = crud.create_requirement(db, "REQ-HIGH", "High risk requirement")
+        for i in range(15):
+            tc = crud.create_testcase(db, f"TC-HIGH-{i}", f"Test {i}")
+            crud.create_mapping(db, req_high.id, tc.id)
+        
+        service = ImpactAnalysisService(db)
+        
+        result_low = service.detect_impacted_nodes(req_low.id, max_depth=2, include_risk_assessment=True)
+        result_high = service.detect_impacted_nodes(req_high.id, max_depth=2, include_risk_assessment=True)
+        
+        assert result_low.risk_assessment['risk_category'] == 'LOW'
+        assert result_high.risk_assessment['risk_category'] in ['HIGH', 'CRITICAL']
+    
+    def test_recommended_actions(self, db):
+        """Test that recommended actions are provided"""
+        req = crud.create_requirement(db, "REQ-ACTION", "Requirement needing actions")
+        tc = crud.create_testcase(db, "TC-ACTION", "Test case")
+        crud.create_mapping(db, req.id, tc.id)
+        
+        service = ImpactAnalysisService(db)
+        result = service.detect_impacted_nodes(req.id, max_depth=2, include_risk_assessment=True)
+        
+        assert 'recommended_actions' in result.risk_assessment
+        assert isinstance(result.risk_assessment['recommended_actions'], list)
+        assert len(result.risk_assessment['recommended_actions']) > 0
+
+
+class TestImpactSummary:
+    """Test impact summary statistics"""
+    
+    def test_summary_counts(self, db, sample_data):
+        """Test that summary counts are accurate"""
+        req1 = sample_data['requirements'][0]
+        
+        service = ImpactAnalysisService(db)
+        result = service.detect_impacted_nodes(req1.id, max_depth=3, include_risk_assessment=False)
+        
+        # Verify counts match
+        assert result.impact_summary['total_impacted_testcases'] == len(result.impacted_testcases)
+        assert result.impact_summary['total_impacted_requirements'] == len(result.impacted_requirements)
+        assert result.total_impacted_nodes == len(result.impacted_testcases) + len(result.impacted_requirements)
+    
+    def test_impact_type_breakdown(self, db, sample_data):
+        """Test breakdown by impact type"""
+        req1 = sample_data['requirements'][0]
+        
+        service = ImpactAnalysisService(db)
+        result = service.detect_impacted_nodes(req1.id, max_depth=3, include_risk_assessment=False)
+        
+        # Should have breakdown by type
+        assert 'testcases_by_impact_type' in result.impact_summary
+        
+        breakdown = result.impact_summary['testcases_by_impact_type']
+        
+        # Count should match
+        total_from_breakdown = sum(breakdown.values())
+        assert total_from_breakdown == len(result.impacted_testcases)
+    
+    def test_impact_level_breakdown(self, db, sample_data):
+        """Test breakdown by impact level"""
+        req1 = sample_data['requirements'][0]
+        
+        service = ImpactAnalysisService(db)
+        result = service.detect_impacted_nodes(req1.id, max_depth=3, include_risk_assessment=False)
+        
+        # Should have breakdown by level
+        assert 'testcases_by_impact_level' in result.impact_summary
+        
+        breakdown = result.impact_summary['testcases_by_impact_level']
+        
+        # Count should match
+        total_from_breakdown = sum(breakdown.values())
+        assert total_from_breakdown == len(result.impacted_testcases)
+
+
+class TestBulkAnalysis:
+    """Test bulk impact analysis operations"""
+    
+    def test_bulk_analysis_multiple_requirements(self, db, sample_data):
+        """Test analyzing multiple requirements at once"""
+        req_ids = [req.id for req in sample_data['requirements'][:3]]
+        
+        results = get_bulk_impact_analysis(db, req_ids, max_depth=2)
+        
+        # Should have results for each requirement
+        assert len(results) == 3
+        
+        for req_id in req_ids:
+            assert req_id in results
+            assert 'total_impacted' in results[req_id]
+            assert 'testcases_count' in results[req_id]
+            assert 'requirements_count' in results[req_id]
+    
+    def test_bulk_analysis_summary_format(self, db, sample_data):
+        """Test that bulk analysis provides summary format"""
+        req_ids = [sample_data['requirements'][0].id]
+        
+        results = get_bulk_impact_analysis(db, req_ids, max_depth=2)
+        
+        result = results[req_ids[0]]
+        
+        # Should have summary information
+        assert 'summary' in result
+        assert isinstance(result['summary'], dict)
+    
+    def test_bulk_analysis_empty_list(self, db):
+        """Test bulk analysis with empty requirement list"""
+        results = get_bulk_impact_analysis(db, [], max_depth=2)
+        
+        assert isinstance(results, dict)
+        assert len(results) == 0
+    
+    def test_bulk_analysis_invalid_ids(self, db):
+        """Test bulk analysis with invalid requirement IDs"""
+        # Use non-existent IDs
+        results = get_bulk_impact_analysis(db, [99999, 88888], max_depth=2)
+        
+        # Should handle gracefully (may return empty or error entries)
+        assert isinstance(results, dict)
+
+
+class TestPathAnalysis:
+    """Test path analysis between requirements and test cases"""
+    
+    def test_shortest_path_direct(self, db):
+        """Test finding shortest path for direct connection"""
+        req = crud.create_requirement(db, "REQ-PATH", "Path requirement")
+        tc = crud.create_testcase(db, "TC-PATH", "Path test case")
+        crud.create_mapping(db, req.id, tc.id)
+        
+        service = ImpactAnalysisService(db)
+        result = service.detect_impacted_nodes(req.id, max_depth=1, include_risk_assessment=False)
+        
+        # Direct connection should have path length 1
+        tc_node = [t for t in result.impacted_testcases if t.node_id == tc.id][0]
+        assert tc_node.impact_type == ImpactType.DIRECT
+    
+    def test_path_through_multiple_hops(self, db):
+        """Test path finding through multiple hops"""
+        # REQ1 -> TC1 <- REQ2 -> TC2
+        req1 = crud.create_requirement(db, "REQ-HOP-1", "First hop")
+        req2 = crud.create_requirement(db, "REQ-HOP-2", "Second hop")
+        tc1 = crud.create_testcase(db, "TC-HOP-1", "First test")
+        tc2 = crud.create_testcase(db, "TC-HOP-2", "Second test")
+        
+        crud.create_mapping(db, req1.id, tc1.id)
+        crud.create_mapping(db, req2.id, tc1.id)
+        crud.create_mapping(db, req2.id, tc2.id)
+        
+        service = ImpactAnalysisService(db)
+        result = service.detect_impacted_nodes(req1.id, max_depth=4, include_risk_assessment=False)
+        
+        # Should find both test cases through different path lengths
+        tc_ids = {tc.node_id for tc in result.impacted_testcases}
+        assert tc1.id in tc_ids
+        assert tc2.id in tc_ids
+
+
+class TestPerformanceAndScalability:
+    """Test performance with large datasets"""
+    
+    def test_large_graph_performance(self, db):
+        """Test performance with larger graph"""
+        # Create 50 requirements
+        reqs = []
+        for i in range(50):
+            req = crud.create_requirement(db, f"REQ-PERF-{i:03d}", f"Performance requirement {i}")
+            reqs.append(req)
+        
+        # Create 100 test cases
+        tcs = []
+        for i in range(100):
+            tc = crud.create_testcase(db, f"TC-PERF-{i:03d}", f"Performance test {i}")
+            tcs.append(tc)
+        
+        # Create random mappings
+        import random
+        random.seed(42)
+        for req in reqs[:30]:
+            # Each requirement mapped to 2-5 test cases
+            num_mappings = random.randint(2, 5)
+            selected_tcs = random.sample(tcs, num_mappings)
+            for tc in selected_tcs:
+                crud.create_mapping(db, req.id, tc.id)
+        
+        # Perform analysis - should complete in reasonable time
+        service = ImpactAnalysisService(db)
+        result = service.detect_impacted_nodes(reqs[0].id, max_depth=3, include_risk_assessment=True)
+        
+        # Should return valid result
+        assert result is not None
+        assert result.total_impacted_nodes >= 0
+    
+    def test_deep_traversal_limit(self, db):
+        """Test that deep traversal respects depth limit"""
+        # Create a long chain
+        prev_tc = None
+        for i in range(10):
+            req = crud.create_requirement(db, f"REQ-CHAIN-{i}", f"Chain requirement {i}")
+            tc = crud.create_testcase(db, f"TC-CHAIN-{i}", f"Chain test {i}")
+            
+            crud.create_mapping(db, req.id, tc.id)
+            if prev_tc:
+                prev_req = crud.create_requirement(db, f"REQ-LINK-{i}", f"Link requirement {i}")
+                crud.create_mapping(db, prev_req.id, prev_tc.id)
+            
+            prev_tc = tc
+        
+        service = ImpactAnalysisService(db)
+        
+        # Shallow traversal
+        result_shallow = service.detect_impacted_nodes(1, max_depth=2, include_risk_assessment=False)
+        
+        # Deep traversal
+        result_deep = service.detect_impacted_nodes(1, max_depth=10, include_risk_assessment=False)
+        
+        # Deep should find more or equal nodes
+        assert result_deep.total_impacted_nodes >= result_shallow.total_impacted_nodes
+
+
+class TestImpactVisualization:
+    """Test impact data for visualization purposes"""
+    
+    def test_impact_graph_data_structure(self, db, sample_data):
+        """Test that impact results can be used for graph visualization"""
+        req1 = sample_data['requirements'][0]
+        
+        service = ImpactAnalysisService(db)
+        result = service.detect_impacted_nodes(req1.id, max_depth=3, include_risk_assessment=False)
+        
+        # Should have structured data for visualization
+        assert hasattr(result, 'impacted_testcases')
+        assert hasattr(result, 'impacted_requirements')
+        
+        # Each node should have necessary attributes
+        for tc in result.impacted_testcases:
+            assert hasattr(tc, 'node_id')
+            assert hasattr(tc, 'node_type')
+            assert hasattr(tc, 'impact_type')
+            assert hasattr(tc, 'impact_level')
+    
+    def test_impact_path_information(self, db, sample_data):
+        """Test that path information is available for visualization"""
+        req1 = sample_data['requirements'][0]
+        
+        service = ImpactAnalysisService(db)
+        result = service.detect_impacted_nodes(req1.id, max_depth=3, include_risk_assessment=False)
+        
+        # Should be able to construct graph edges
+        for tc in result.impacted_testcases:
+            assert tc.impact_type in [ImpactType.DIRECT, ImpactType.INDIRECT, ImpactType.CASCADING]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
