@@ -13,7 +13,7 @@ from typing import Dict, List
 
 # Third-party imports
 from sqlalchemy import distinct, func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 # Local imports
 from app.models.db_models import Mapping, Requirement, TestCaseModel
@@ -91,25 +91,21 @@ def export_coverage_report_csv(db: Session) -> str:
         "Mapped Test Cases"
     ])
     
-    # Get all requirements
-    requirements = db.query(Requirement).all()
+    # Get all requirements with mappings eagerly loaded (eliminates N+1 queries)
+    requirements = (
+        db.query(Requirement)
+        .options(selectinload(Requirement.mappings).selectinload(Mapping.testcase))
+        .all()
+    )
     
     for req in requirements:
-        # Get mappings for this requirement
-        mappings = db.query(Mapping).filter(
-            Mapping.requirement_id == req.id
-        ).all()
-        
-        test_case_count = len(mappings)
+        # Access pre-loaded mappings (no additional query)
+        test_case_count = len(req.mappings)
         coverage_status = "Covered" if test_case_count > 0 else "Uncovered"
         
-        # Get test case names
-        if mappings:
-            test_case_ids = [m.testcase_id for m in mappings]
-            test_cases = db.query(TestCaseModel).filter(
-                TestCaseModel.id.in_(test_case_ids)
-            ).all()
-            test_case_names = "; ".join([tc.name for tc in test_cases])
+        # Get test case names from pre-loaded relationships
+        if req.mappings:
+            test_case_names = "; ".join([m.testcase.name for m in req.mappings])
         else:
             test_case_names = "None"
         
@@ -173,15 +169,17 @@ def export_risk_report_csv(db: Session, days_threshold: int = 30) -> str:
             0
         ])
     
-    # Get covered requirements (low risk)
-    covered_reqs = db.query(Requirement).filter(
-        Requirement.id.in_(covered_ids)
-    ).all()
+    # Get covered requirements with mappings eagerly loaded (low risk)
+    covered_reqs = (
+        db.query(Requirement)
+        .filter(Requirement.id.in_(covered_ids))
+        .options(selectinload(Requirement.mappings))
+        .all()
+    )
     
     for req in covered_reqs:
-        test_count = db.query(func.count(Mapping.id)).filter(
-            Mapping.requirement_id == req.id
-        ).scalar()
+        # Use pre-loaded mappings instead of separate query
+        test_count = len(req.mappings)
         
         writer.writerow([
             req.id,

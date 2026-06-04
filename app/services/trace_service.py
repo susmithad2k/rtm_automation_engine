@@ -15,7 +15,8 @@ from app.db.crud import (
     get_testcases, 
     create_mapping as crud_create_mapping,
     get_mappings_by_requirement,
-    get_mappings_by_testcase
+    get_mappings_by_testcase,
+    bulk_create_mappings
 )
 from app.utils.text_processing import SimilarityCalculator, combine_text_fields
 from app.utils.logger import get_logger
@@ -158,7 +159,8 @@ class TraceabilityService:
     def generate_traceability_matrix(
         self,
         db: Session,
-        use_hybrid: bool = True
+        use_hybrid: bool = True,
+        use_bulk: bool = True
     ) -> Dict[str, any]:
         """
         Generate complete traceability matrix for all requirements and test cases.
@@ -166,6 +168,7 @@ class TraceabilityService:
         Args:
             db: Database session
             use_hybrid: Whether to use hybrid (keyword + TF-IDF) or TF-IDF only
+            use_bulk: Whether to use bulk insert for mappings (recommended)
             
         Returns:
             Dictionary with mapping statistics and results
@@ -187,14 +190,33 @@ class TraceabilityService:
             f"and {len(testcases)} test cases"
         )
         
-        total_mappings_created = 0
-        
-        # Process each requirement
-        for requirement in requirements:
-            mappings = self.create_mappings_for_requirement(
-                db, requirement, testcases, use_hybrid
-            )
-            total_mappings_created += len(mappings)
+        if use_bulk:
+            # Collect all mappings first, then bulk insert
+            all_mappings = []
+            
+            for requirement in requirements:
+                matches = self.find_similar_testcases(requirement, testcases, use_hybrid)
+                
+                for match in matches:
+                    all_mappings.append((requirement.id, match.testcase_id))
+                    logger.info(
+                        f"Identified mapping: Req {requirement.id} -> TC {match.testcase_id} "
+                        f"(score: {match.similarity_score:.3f})"
+                    )
+            
+            # Bulk create all mappings at once
+            total_mappings_created = bulk_create_mappings(db, all_mappings)
+            
+        else:
+            # Original approach: create mappings one at a time
+            total_mappings_created = 0
+            
+            # Process each requirement
+            for requirement in requirements:
+                mappings = self.create_mappings_for_requirement(
+                    db, requirement, testcases, use_hybrid
+                )
+                total_mappings_created += len(mappings)
         
         return {
             "total_requirements": len(requirements),

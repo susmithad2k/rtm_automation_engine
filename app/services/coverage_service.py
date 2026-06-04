@@ -1,11 +1,14 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import func, distinct
 from app.models.db_models import Requirement, TestCaseModel, Mapping
 from datetime import datetime
 from typing import Dict
 
+# Import query optimizer for more efficient queries
+from app.db.query_optimizer import query_optimizer
 
-def calculate_coverage(db: Session) -> dict:
+
+def calculate_coverage(db: Session, use_optimized: bool = True) -> dict:
     """
     Calculate test coverage metrics for requirements.
     
@@ -14,6 +17,7 @@ def calculate_coverage(db: Session) -> dict:
     
     Args:
         db: Database session
+        use_optimized: Whether to use the optimized single-query approach
         
     Returns:
         dict: Coverage metrics containing:
@@ -24,6 +28,11 @@ def calculate_coverage(db: Session) -> dict:
             - total_testcases: Total number of test cases
             - total_mappings: Total number of requirement-testcase mappings
     """
+    if use_optimized:
+        # Use optimized single query from query optimizer
+        return query_optimizer.get_coverage_metrics_optimized(db)
+    
+    # Original implementation (kept for backward compatibility)
     # Count total requirements
     total_requirements = db.query(func.count(Requirement.id)).scalar()
     
@@ -53,7 +62,7 @@ def calculate_coverage(db: Session) -> dict:
     }
 
 
-def get_uncovered_requirements(db: Session, skip: int = 0, limit: int = 100):
+def get_uncovered_requirements(db: Session, skip: int = 0, limit: int = 100, use_optimized: bool = True):
     """
     Get all requirements that don't have any test case mappings.
     
@@ -61,10 +70,18 @@ def get_uncovered_requirements(db: Session, skip: int = 0, limit: int = 100):
         db: Database session
         skip: Number of records to skip (for pagination)
         limit: Maximum number of records to return
+        use_optimized: Whether to use optimized query with NOT EXISTS
         
     Returns:
         List of requirements without test case coverage
     """
+    if use_optimized:
+        # Use optimized query from query optimizer
+        return query_optimizer.get_uncovered_requirements_optimized(
+            db, skip, limit, columns_only=False
+        )
+    
+    # Original implementation (kept for backward compatibility)
     # Subquery to get all requirement IDs that have mappings
     covered_ids = db.query(Mapping.requirement_id).distinct().subquery()
     
@@ -142,11 +159,15 @@ def get_combined_coverage_and_risk(
         risk_level = "LOW"
         recommendation = "Maintain current test coverage levels."
     
-    # Get uncovered requirements list
+    # Get uncovered requirements list (only select needed columns for efficiency)
     covered_ids = db.query(Mapping.requirement_id).distinct().subquery()
-    uncovered_reqs = db.query(Requirement).filter(
-        ~Requirement.id.in_(covered_ids)
-    ).offset(skip).limit(limit).all()
+    uncovered_reqs = (
+        db.query(Requirement.id, Requirement.title, Requirement.description)
+        .filter(~Requirement.id.in_(covered_ids))
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
     
     uncovered_requirement_list = [
         {

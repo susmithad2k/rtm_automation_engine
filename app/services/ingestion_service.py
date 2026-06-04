@@ -3,7 +3,7 @@ from typing import List, Dict
 from app.connectors.jira_client import fetch_jira_issues
 from app.connectors.confluence_client import fetch_confluence_pages
 from app.connectors.testcase_loader import read_testcases_from_csv
-from app.db.crud import create_requirement, create_testcase
+from app.db.crud import create_requirement, create_testcase, bulk_create_requirements, bulk_create_testcases
 
 
 def ingest_jira_data(
@@ -11,7 +11,8 @@ def ingest_jira_data(
     jira_url: str = None,
     username: str = None,
     api_token: str = None,
-    jql: str = "project IS NOT EMPTY"
+    jql: str = "project IS NOT EMPTY",
+    use_bulk: bool = True
 ) -> Dict[str, int]:
     """
     Ingest Jira issues into the database as requirements
@@ -22,6 +23,7 @@ def ingest_jira_data(
         username: Jira username/email
         api_token: Jira API token
         jql: JQL query to filter issues
+        use_bulk: Whether to use bulk insert (recommended for >10 issues)
         
     Returns:
         Dictionary with ingestion statistics
@@ -35,34 +37,65 @@ def ingest_jira_data(
             jql=jql
         )
         
-        ingested_count = 0
-        failed_count = 0
-        
-        # Loop through issues and save as requirements
-        for issue in issues:
-            try:
-                # Extract issue data
-                fields = issue.get("fields", {})
-                key = issue.get("key", "")
-                summary = fields.get("summary", "")
-                description = fields.get("description", "")
-                
-                # Create title from key and summary
-                title = f"{key}: {summary}"
-                
-                # Save to database using CRUD
-                create_requirement(db, title=title, description=str(description))
-                ingested_count += 1
-                
-            except Exception as e:
-                failed_count += 1
-                print(f"Failed to ingest issue {issue.get('key', 'unknown')}: {str(e)}")
-        
-        return {
-            "total_fetched": len(issues),
-            "ingested": ingested_count,
-            "failed": failed_count
-        }
+        if use_bulk and len(issues) > 5:
+            # Use bulk operation for better performance
+            requirements_data = []
+            failed_count = 0
+            
+            for issue in issues:
+                try:
+                    # Extract issue data
+                    fields = issue.get("fields", {})
+                    key = issue.get("key", "")
+                    summary = fields.get("summary", "")
+                    description = fields.get("description", "")
+                    
+                    # Create title from key and summary
+                    title = f"{key}: {summary}"
+                    requirements_data.append((title, str(description)))
+                    
+                except Exception as e:
+                    failed_count += 1
+                    print(f"Failed to parse issue {issue.get('key', 'unknown')}: {str(e)}")
+            
+            # Bulk insert all requirements
+            created = bulk_create_requirements(db, requirements_data)
+            ingested_count = len(created)
+            
+            return {
+                "total_fetched": len(issues),
+                "ingested": ingested_count,
+                "failed": failed_count
+            }
+        else:
+            # Use individual inserts for small batches
+            ingested_count = 0
+            failed_count = 0
+            
+            for issue in issues:
+                try:
+                    # Extract issue data
+                    fields = issue.get("fields", {})
+                    key = issue.get("key", "")
+                    summary = fields.get("summary", "")
+                    description = fields.get("description", "")
+                    
+                    # Create title from key and summary
+                    title = f"{key}: {summary}"
+                    
+                    # Save to database using CRUD
+                    create_requirement(db, title=title, description=str(description))
+                    ingested_count += 1
+                    
+                except Exception as e:
+                    failed_count += 1
+                    print(f"Failed to ingest issue {issue.get('key', 'unknown')}: {str(e)}")
+            
+            return {
+                "total_fetched": len(issues),
+                "ingested": ingested_count,
+                "failed": failed_count
+            }
         
     except Exception as e:
         raise Exception(f"Failed to ingest Jira data: {str(e)}")
@@ -73,7 +106,8 @@ def ingest_confluence_data(
     confluence_url: str = None,
     username: str = None,
     api_token: str = None,
-    space_key: str = None
+    space_key: str = None,
+    use_bulk: bool = True
 ) -> Dict[str, int]:
     """
     Ingest Confluence pages into the database as requirements
@@ -84,6 +118,7 @@ def ingest_confluence_data(
         username: Confluence username/email
         api_token: Confluence API token
         space_key: Confluence space key to filter pages
+        use_bulk: Whether to use bulk insert (recommended for >10 pages)
         
     Returns:
         Dictionary with ingestion statistics
@@ -97,35 +132,67 @@ def ingest_confluence_data(
             space_key=space_key
         )
         
-        ingested_count = 0
-        failed_count = 0
-        
-        # Loop through pages and save as requirements
-        for page in pages:
-            try:
-                # Extract page data
-                page_id = page.get("id", "")
-                title = page.get("title", "")
-                
-                # Extract body content
-                body = page.get("body", {}).get("storage", {}).get("value", "")
-                
-                # Create description from page ID and body
-                description = f"Confluence Page ID: {page_id}\n\n{body}"
-                
-                # Save to database using CRUD
-                create_requirement(db, title=title, description=description)
-                ingested_count += 1
-                
-            except Exception as e:
-                failed_count += 1
-                print(f"Failed to ingest page {page.get('title', 'unknown')}: {str(e)}")
-        
-        return {
-            "total_fetched": len(pages),
-            "ingested": ingested_count,
-            "failed": failed_count
-        }
+        if use_bulk and len(pages) > 5:
+            # Use bulk operation for better performance
+            requirements_data = []
+            failed_count = 0
+            
+            for page in pages:
+                try:
+                    # Extract page data
+                    page_id = page.get("id", "")
+                    title = page.get("title", "")
+                    
+                    # Extract body content
+                    body = page.get("body", {}).get("storage", {}).get("value", "")
+                    
+                    # Create description from page ID and body
+                    description = f"Confluence Page ID: {page_id}\n\n{body}"
+                    requirements_data.append((title, description))
+                    
+                except Exception as e:
+                    failed_count += 1
+                    print(f"Failed to parse page {page.get('title', 'unknown')}: {str(e)}")
+            
+            # Bulk insert all requirements
+            created = bulk_create_requirements(db, requirements_data)
+            ingested_count = len(created)
+            
+            return {
+                "total_fetched": len(pages),
+                "ingested": ingested_count,
+                "failed": failed_count
+            }
+        else:
+            # Use individual inserts for small batches
+            ingested_count = 0
+            failed_count = 0
+            
+            for page in pages:
+                try:
+                    # Extract page data
+                    page_id = page.get("id", "")
+                    title = page.get("title", "")
+                    
+                    # Extract body content
+                    body = page.get("body", {}).get("storage", {}).get("value", "")
+                    
+                    # Create description from page ID and body
+                    description = f"Confluence Page ID: {page_id}\n\n{body}"
+                    
+                    # Save to database using CRUD
+                    create_requirement(db, title=title, description=description)
+                    ingested_count += 1
+                    
+                except Exception as e:
+                    failed_count += 1
+                    print(f"Failed to ingest page {page.get('title', 'unknown')}: {str(e)}")
+            
+            return {
+                "total_fetched": len(pages),
+                "ingested": ingested_count,
+                "failed": failed_count
+            }
         
     except Exception as e:
         raise Exception(f"Failed to ingest Confluence data: {str(e)}")
