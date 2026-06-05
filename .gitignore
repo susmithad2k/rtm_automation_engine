@@ -15,6 +15,9 @@ test.db
 test_*.db
 *.log
 
+# Logs directory
+logs/
+
 # Virtual Environment
 venv/
 env/
